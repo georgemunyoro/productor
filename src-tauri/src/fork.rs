@@ -1,7 +1,7 @@
 //! Forking a chat from the end of any of its turns.
 
 use crate::store::{Chat, ForkSource};
-use crate::{agent, codex, copy_session, make_workspace, AppState, StartPoint};
+use crate::{agent, codex, copy_session, make_workspace, AppState, Start, StartPoint};
 use serde_json::{json, Value};
 use std::path::Path;
 use tauri::{AppHandle, Manager, Runtime};
@@ -85,6 +85,9 @@ pub async fn fork_chat<R: Runtime>(
     chat.title = Some(format!("{source_title} (fork)"));
     chat.turns = turn;
     chat.agent = source.agent.clone();
+    chat.linked_pr = source.linked_pr.clone();
+    chat.model = source.model.clone();
+    chat.fast = source.fast;
     if !is_codex {
         chat.fork = Some(ForkSource { session_id: session_id.clone(), at_uuid: point.at_uuid });
     }
@@ -100,7 +103,16 @@ pub async fn fork_chat<R: Runtime>(
             base_sha: source_ws.base_sha.clone(),
             group_id: source_ws.group_id.clone(),
         };
-        let ws = make_workspace(&state, &source_ws.repo_id, Some(start)).await?;
+        let mut ws = make_workspace(&state, &source_ws.repo_id, Start::Snapshot(start)).await?;
+        // A fork of a review is still a review of the same pull request.
+        if source_ws.linked_pr.is_some() {
+            ws.linked_pr = source_ws.linked_pr.clone();
+            let mut store = state.store.lock().unwrap();
+            if let Some(stored) = store.data.workspaces.iter_mut().find(|w| w.id == ws.id) {
+                stored.linked_pr = ws.linked_pr.clone();
+            }
+            store.save()?;
+        }
         if !is_codex {
             copy_session(&session_id, Path::new(&source_ws.path), Path::new(&ws.path))?;
         }
@@ -160,15 +172,16 @@ mod tests {
         git::git(&repo, &["init", "-q"]).await.unwrap();
         std::fs::write(repo.join("README.md"), "hello").unwrap();
         git::git(&repo, &["add", "."]).await.unwrap();
-        git::git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]).await.unwrap();
+        git::git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]).await.unwrap();
         let head = git::git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
 
         let mut store = Store::load(root.join("data"));
         let path = repo.to_string_lossy().to_string();
-        store.data.repos.push(Repo { id: "r".into(), name: "repo".into(), path: path.clone(), run_script: None });
+        store.data.repos.push(Repo { id: "r".into(), name: "repo".into(), path: path.clone(), run_script: None, setup_script: None });
         store.data.workspaces.push(Workspace {
             id: "w".into(), repo_id: "r".into(), name: "w".into(), branch: "main".into(),
             path, created_at: 0, archived: false, base_sha: Some(head.clone()), group_id: Some("g".into()),
+            auto_pr: false, ci_fix_sha: None, ci_fix_attempts: 0, handled_threads: vec![], linked_pr: None, auto_push: false, conflict_sha: None,
         });
         let mut chat = Chat::new(Some("w".into()), None, None);
         chat.id = "a".into();
@@ -179,6 +192,8 @@ mod tests {
             store: std::sync::Mutex::new(store),
             agents: Agents::default(),
             terminals: Default::default(),
+            prs: Default::default(),
+            problems: Default::default(),
         });
         let handle = app.handle().clone();
         let state = handle.state::<AppState>();

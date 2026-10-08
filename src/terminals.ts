@@ -15,7 +15,8 @@ interface TerminalStore {
   tabs: TerminalTab[];
   /** Tab shown in each workspace. */
   active: Record<string, string>;
-  open: (workspaceId: string, command?: string) => Promise<void>;
+  /** Opens a shell, or runs `command` in one under the given tab title. */
+  open: (workspaceId: string, command?: string, title?: string) => Promise<void>;
   close: (id: string) => void;
   select: (workspaceId: string, id: string) => void;
 }
@@ -43,7 +44,7 @@ export const useTerminals = create<TerminalStore>((set, get) => ({
   tabs: [],
   active: {},
 
-  open: async (workspaceId, command) => {
+  open: async (workspaceId, command, tabTitle) => {
     const term = new Terminal({
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
       fontSize: 12,
@@ -59,7 +60,7 @@ export const useTerminals = create<TerminalStore>((set, get) => ({
     term.onResize(({ cols, rows }) => void api.termResize(id, cols, rows).catch(() => {}));
 
     const count = get().tabs.filter((t) => t.workspaceId === workspaceId && !command).length;
-    const title = command ? "run" : `zsh ${count + 1}`;
+    const title = tabTitle ?? (command ? "run" : `zsh ${count + 1}`);
     set((s) => ({
       tabs: [...s.tabs, { id, workspaceId, title, exited: false }],
       active: { ...s.active, [workspaceId]: id },

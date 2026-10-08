@@ -15,16 +15,25 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "fs"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "fs", "time"] }
 uuid = { version = "1", features = ["v4"] }
 portable-pty = "0.9"
 base64 = "0.22"
+chrono = "0.4"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tokio = { version = "1", features = ["time"] }
+
+# Debug info is most of what a Tauri debug build weighs. Leaving it out keeps
+# the build cache to a few gigabytes instead of more than ten.
+[profile.dev]
+debug = 0
 
 [profile.release]
 codegen-units = 1

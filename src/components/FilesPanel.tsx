@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore, workspaceStatus } from "../store";
 import type { Workspace } from "../types";
+import { useUi } from "../ui";
 
 interface TreeNode {
   name: string;
@@ -68,7 +69,10 @@ export function FilesPanel({ workspace }: { workspace: Workspace }) {
   const [language, setLanguage] = useState<Extension | null>(null);
   const status = useStore((s) => workspaceStatus(workspace.id, s.chats, s.statuses));
   const reportError = useStore((s) => s.reportError);
-  const dark = usePrefersDark();
+  const systemDark = usePrefersDark();
+  // The theme chosen in Settings wins over the system's.
+  const theme = useUi((s) => s.theme);
+  const dark = theme === "dark" || (theme === "system" && systemDark);
 
   const fileRef = useRef(file);
   fileRef.current = file;
@@ -167,7 +171,7 @@ export function FilesPanel({ workspace }: { workspace: Workspace }) {
             onClick={() => toggle(node.path)}
             aria-expanded={expanded.has(node.path)}
           >
-            <span className="chevron">{expanded.has(node.path) ? "▾" : "▸"}</span>
+            <span className="chevron" aria-hidden />
             {node.name}
           </button>
           {expanded.has(node.path) && renderNodes(node.children, depth + 1)}

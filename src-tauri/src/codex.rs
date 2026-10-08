@@ -129,6 +129,21 @@ fn translate(event: &Value, turn_id: &str, started: &mut HashSet<String>) -> Vec
     out
 }
 
+/// Flags for the chat's chosen model and speed. Anything left unset falls
+/// back to the user's own Codex configuration.
+fn model_args(model: Option<&str>, fast: Option<bool>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(model) = model {
+        args.extend(["-m".to_string(), model.to_string()]);
+    }
+    match fast {
+        Some(true) => args.extend(["--enable", "fast_mode", "-c", "service_tier=\"fast\""].map(String::from)),
+        Some(false) => args.extend(["--disable", "fast_mode"].map(String::from)),
+        None => {}
+    }
+    args
+}
+
 /// Flags setting what Codex may touch in this chat.
 fn permission_args(quick: bool) -> Vec<&'static str> {
     if quick {
@@ -139,7 +154,7 @@ fn permission_args(quick: bool) -> Vec<&'static str> {
 }
 
 /// Runs one Codex turn in the background, recording its events as it goes.
-pub fn run_turn<R: Runtime>(app: &AppHandle<R>, chat_id: &str, prompt: String) {
+pub fn run_turn<R: Runtime>(app: &AppHandle<R>, chat_id: &str, prompt: String, images: Vec<String>) {
     let state = app.state::<AppState>();
     let (generation, killed) = state.agents.register_one_shot(chat_id);
     let app = app.clone();
@@ -154,29 +169,36 @@ pub fn run_turn<R: Runtime>(app: &AppHandle<R>, chat_id: &str, prompt: String) {
                     Some(id) => store.workspace(id).map(|ws| ws.path.clone()),
                     None => chat.cwd.clone(),
                 }?;
-                Some((PathBuf::from(cwd), chat.session_id.clone(), chat.workspace_id.is_none()))
+                let mut options = model_args(chat.model.as_deref(), chat.fast);
+                for image in &images {
+                    options.extend(["-i".to_string(), image.clone()]);
+                }
+                Some((PathBuf::from(cwd), chat.session_id.clone(), chat.workspace_id.is_none(), options))
             })
         };
-        let Some((cwd, thread_id, quick)) = context else {
+        let Some((cwd, thread_id, quick, options)) = context else {
             state.agents.unregister(&chat_id, &generation);
             set_status(&app, &chat_id, "idle");
             return;
         };
 
+        let started = std::time::Instant::now();
         let outcome = tokio::select! {
-            outcome = exec(&app, &chat_id, &cwd, thread_id, quick, &prompt) => outcome,
+            outcome = exec(&app, &chat_id, &cwd, thread_id, quick, &options, &prompt) => outcome,
             _ = killed => Err("interrupted".to_string()),
         };
         state.agents.unregister(&chat_id, &generation);
 
-        let result = match outcome {
-            Ok(()) => json!({ "type": "result", "subtype": "success", "is_error": false }),
+        let duration_ms = started.elapsed().as_millis() as u64;
+        let mut result = match outcome {
+            Ok(usage) => json!({ "type": "result", "subtype": "success", "is_error": false, "usage": usage }),
             // Rendered as a plain "Stopped", like an interrupted Claude turn.
             Err(e) if e == "interrupted" => {
                 json!({ "type": "result", "subtype": "error_during_execution", "is_error": true })
             }
             Err(e) => json!({ "type": "result", "subtype": "error", "is_error": true, "result": e }),
         };
+        result["duration_ms"] = json!(duration_ms);
         finish_turn(&app, &chat_id, &cwd, quick, &result).await;
     });
 }
@@ -189,8 +211,9 @@ async fn exec<R: Runtime>(
     cwd: &Path,
     thread_id: Option<String>,
     quick: bool,
+    options: &[String],
     prompt: &str,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     let mut cmd = Command::new("codex");
     cmd.current_dir(cwd).arg("exec");
     if let Some(id) = &thread_id {
@@ -198,6 +221,7 @@ async fn exec<R: Runtime>(
     }
     cmd.args(["--json", "--skip-git-repo-check"])
         .args(permission_args(quick))
+        .args(options)
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -219,7 +243,7 @@ async fn exec<R: Runtime>(
     let turn_id = uuid::Uuid::new_v4().to_string();
     let mut started = HashSet::new();
     let mut failure: Option<String> = None;
-    let mut completed = false;
+    let mut completed: Option<Value> = None;
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
@@ -236,7 +260,7 @@ async fn exec<R: Runtime>(
                     }
                 }
             }
-            "turn.completed" => completed = true,
+            "turn.completed" => completed = Some(event["usage"].clone()),
             "turn.failed" => failure = event["error"]["message"].as_str().map(String::from),
             "error" => failure = event["message"].as_str().map(String::from),
             _ => {
@@ -248,8 +272,8 @@ async fn exec<R: Runtime>(
     }
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
-    if completed {
-        return Ok(());
+    if let Some(usage) = completed {
+        return Ok(usage);
     }
     if let Some(message) = failure {
         return Err(message);
@@ -295,6 +319,13 @@ mod tests {
     }
 
     #[test]
+    fn passes_the_chosen_model_and_speed() {
+        assert!(model_args(None, None).is_empty(), "unset choices are left to Codex's own config");
+        assert_eq!(model_args(Some("gpt-x"), Some(false)), ["-m", "gpt-x", "--disable", "fast_mode"]);
+        assert_eq!(model_args(None, Some(true)), ["--enable", "fast_mode", "-c", "service_tier=\"fast\""]);
+    }
+
+    #[test]
     fn translates_a_command_into_one_tool_call_and_its_result() {
         let mut started = HashSet::new();
         let begin = json!({"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc ls","status":"in_progress"}});
@@ -325,7 +356,7 @@ mod tests {
         git::git(&main, &["init", "-q"]).await.unwrap();
         std::fs::write(main.join("README.md"), "hello").unwrap();
         git::git(&main, &["add", "."]).await.unwrap();
-        git::git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]).await.unwrap();
+        git::git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]).await.unwrap();
         // Keep the test from reaching for the user's signing key.
         git::git(&main, &["config", "commit.gpgsign", "false"]).await.unwrap();
         // A real workspace is a linked worktree, whose git data is elsewhere.
@@ -334,10 +365,11 @@ mod tests {
         git::git(&main, &["worktree", "add", "-q", "-b", "t/wt", &worktree_str, "HEAD"]).await.unwrap();
 
         let mut store = Store::load(root.join("data"));
-        store.data.repos.push(Repo { id: "r".into(), name: "repo".into(), path: main.to_string_lossy().to_string(), run_script: None });
+        store.data.repos.push(Repo { id: "r".into(), name: "repo".into(), path: main.to_string_lossy().to_string(), run_script: None, setup_script: None });
         store.data.workspaces.push(Workspace {
             id: "w".into(), repo_id: "r".into(), name: "wt".into(), branch: "t/wt".into(),
             path: worktree_str, created_at: 0, archived: false, base_sha: None, group_id: None,
+            auto_pr: false, ci_fix_sha: None, ci_fix_attempts: 0, handled_threads: vec![], linked_pr: None, auto_push: false, conflict_sha: None,
         });
         let mut chat = Chat::new(Some("w".into()), None, None);
         chat.id = "x".into();
@@ -349,6 +381,8 @@ mod tests {
             store: std::sync::Mutex::new(store),
             agents: Agents::default(),
             terminals: Default::default(),
+            prs: Default::default(),
+            problems: Default::default(),
         });
         let handle = app.handle().clone();
         let state = handle.state::<AppState>();

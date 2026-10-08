@@ -35,6 +35,7 @@ impl Terminals {
         cols: u16,
         rows: u16,
         command: Option<String>,
+        env: &[(&str, String)],
     ) -> Result<String, String> {
         let pair = native_pty_system().openpty(size(cols, rows)).map_err(|e| e.to_string())?;
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
@@ -46,6 +47,9 @@ impl Terminals {
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        for (name, value) in env {
+            cmd.env(name, value);
+        }
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
 
@@ -97,6 +101,12 @@ impl Terminals {
         }
     }
 
+    pub fn close_all(&self) {
+        for (_, mut term) in self.open.lock().unwrap().drain() {
+            let _ = term.child.kill();
+        }
+    }
+
     pub fn close_workspace(&self, workspace_id: &str) {
         let mut open = self.open.lock().unwrap();
         open.retain(|_, term| {
@@ -122,6 +132,8 @@ mod tests {
             store: Mutex::new(crate::store::Store::load(std::env::temp_dir().join(format!("productor-term-{}", uuid::Uuid::new_v4())))),
             agents: Default::default(),
             terminals: Default::default(),
+            prs: Default::default(),
+            problems: Default::default(),
         });
         let output = Arc::new(Mutex::new(Vec::<u8>::new()));
         let exited = Arc::new(Mutex::new(false));
@@ -138,7 +150,7 @@ mod tests {
         let cwd = std::env::temp_dir();
         let id = state
             .terminals
-            .open(app.handle(), "w", &cwd, 80, 24, Some("echo productor-$((6*7)); pwd".into()))
+            .open(app.handle(), "w", &cwd, 80, 24, Some("echo productor-$((6*7)); pwd".into()), &[])
             .unwrap();
         state.terminals.resize(&id, 100, 30).ok();
 

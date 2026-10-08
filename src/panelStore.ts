@@ -17,6 +17,10 @@ export interface ReviewComment {
 
 interface DiffState {
   files: DiffFile[];
+  /** Paths with changes that are not committed yet. */
+  uncommitted: string[];
+  /** Commits not pushed yet; null if the branch has never been pushed. */
+  unpushed: number | null;
   loading: boolean;
   error: string | null;
 }
@@ -27,6 +31,9 @@ interface PanelStore {
   width: number;
   sidebarOpen: boolean;
   sidebarWidth: number;
+  /** Sidebar sections the user has collapsed, by key. */
+  collapsed: Record<string, boolean>;
+  inboxTab: "reviews" | "mine";
   diffs: Record<string, DiffState>;
   comments: Record<string, ReviewComment[]>;
 
@@ -35,6 +42,8 @@ interface PanelStore {
   setWidth: (width: number) => void;
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
+  toggleSection: (key: string) => void;
+  setInboxTab: (tab: "reviews" | "mine") => void;
   loadDiff: (workspaceId: string) => Promise<void>;
   addComment: (workspaceId: string, comment: Omit<ReviewComment, "id">) => void;
   removeComment: (workspaceId: string, id: string) => void;
@@ -74,6 +83,8 @@ export const usePanel = create<PanelStore>((set, get) => ({
   width: saved("panel.width", 520),
   sidebarOpen: saved("sidebar.open", true),
   sidebarWidth: saved("sidebar.width", 250),
+  collapsed: saved<Record<string, boolean>>("sidebar.collapsed", {}),
+  inboxTab: saved<"reviews" | "mine">("inbox.tab", "reviews"),
   diffs: {},
   comments: {},
 
@@ -99,25 +110,53 @@ export const usePanel = create<PanelStore>((set, get) => ({
     set({ sidebarWidth });
   },
 
+  setInboxTab: (inboxTab) => {
+    save("inbox.tab", inboxTab);
+    set({ inboxTab });
+  },
+
+  toggleSection: (key) => {
+    const collapsed = { ...get().collapsed };
+    if (collapsed[key]) delete collapsed[key];
+    else collapsed[key] = true;
+    save("sidebar.collapsed", collapsed);
+    set({ collapsed });
+  },
+
   loadDiff: async (workspaceId) => {
     const previous = get().diffs[workspaceId];
     if (previous?.loading) return;
     set((s) => ({
       diffs: {
         ...s.diffs,
-        [workspaceId]: { files: previous?.files ?? [], loading: true, error: null },
+        [workspaceId]: {
+          files: previous?.files ?? [],
+          uncommitted: previous?.uncommitted ?? [],
+          unpushed: previous?.unpushed ?? null,
+          loading: true,
+          error: null,
+        },
       },
     }));
     try {
-      const { diff } = await api.getDiff(workspaceId);
+      const { diff, uncommitted, unpushed } = await api.getDiff(workspaceId);
       set((s) => ({
-        diffs: { ...s.diffs, [workspaceId]: { files: parseDiff(diff), loading: false, error: null } },
+        diffs: {
+          ...s.diffs,
+          [workspaceId]: { files: parseDiff(diff), uncommitted, unpushed, loading: false, error: null },
+        },
       }));
     } catch (e) {
       set((s) => ({
         diffs: {
           ...s.diffs,
-          [workspaceId]: { files: previous?.files ?? [], loading: false, error: String(e) },
+          [workspaceId]: {
+            files: previous?.files ?? [],
+            uncommitted: previous?.uncommitted ?? [],
+            unpushed: previous?.unpushed ?? null,
+            loading: false,
+            error: String(e),
+          },
         },
       }));
     }

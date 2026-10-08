@@ -3,8 +3,28 @@ import { useEffect, useRef, useState } from "react";
 import type { Member } from "../api";
 import { usePanel } from "../panelStore";
 import { groupStatus, useStore, workspaceStatus } from "../store";
-import type { Chat, Workspace } from "../types";
+import { tagStyle } from "../tags";
+import { useUi } from "../ui";
+import type { Chat, InboxItem, Workspace } from "../types";
+import { InlineRename } from "./InlineRename";
+import { PrMark } from "./PrStatusMarks";
 import { SidebarToggle } from "./SidebarToggle";
+
+const REVIEW_DOT: Record<InboxItem["status"], string> = {
+  new: "idle",
+  running: "running",
+  needs_approval: "awaiting_permission",
+  done: "done",
+  failed: "failed",
+};
+
+const REVIEW_LABEL: Record<InboxItem["status"], string> = {
+  new: "Not started",
+  running: "Agent is reviewing",
+  needs_approval: "Needs your approval",
+  done: "Review ready",
+  failed: "Review failed",
+};
 
 const DRAG_TYPE = "application/x-productor-member";
 
@@ -16,6 +36,22 @@ function dragProps(member: Member) {
       e.dataTransfer.effectAllowed = "move";
     },
   };
+}
+
+/** Disclosure control for a sidebar section; remembers its state. */
+function SectionToggle({ id, label }: { id: string; label: string }) {
+  const collapsed = usePanel((s) => Boolean(s.collapsed[id]));
+  return (
+    <button
+      className="section-toggle"
+      aria-expanded={!collapsed}
+      aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
+      title={collapsed ? "Expand" : "Collapse"}
+      onClick={() => usePanel.getState().toggleSection(id)}
+    >
+      ▸
+    </button>
+  );
 }
 
 /** Makes an element accept dragged workspaces and quick chats. */
@@ -118,7 +154,13 @@ function GroupMenu({ member, current }: { member: Member; current: string | null
 function WorkspaceRow({ workspace, detail }: { workspace: Workspace; detail: string }) {
   const selected = useStore((s) => s.selectedWorkspaceId === workspace.id);
   const status = useStore((s) => workspaceStatus(workspace.id, s.chats, s.statuses));
-  const { selectWorkspace, archiveWorkspace } = useStore.getState();
+  const pr = useStore((s) => s.prs[workspace.id]);
+  // Something happened in one of its chats while it was not on screen.
+  const unread = useUi((u) =>
+    useStore.getState().chats.some((c) => c.workspaceId === workspace.id && u.unread[c.id]),
+  );
+  const { selectWorkspace, archiveWorkspace, renameWorkspace } = useStore.getState();
+  const [renaming, setRenaming] = useState(false);
   const member: Member = { kind: "workspace", id: workspace.id };
 
   const archive = async () => {
@@ -132,13 +174,43 @@ function WorkspaceRow({ workspace, detail }: { workspace: Workspace; detail: str
   return (
     <li>
       <div className={"workspace" + (selected ? " selected" : "")} {...dragProps(member)}>
-        <button className="workspace-main" onClick={() => selectWorkspace(workspace.id)}>
-          <span className={`dot ${status}`} aria-hidden />
-          <span className="workspace-text">
-            <span className="workspace-name">{workspace.name}</span>
-            <span className="workspace-branch">{detail}</span>
+        {renaming ? (
+          <span className="workspace-main">
+            <span className={`dot ${status}`} aria-hidden />
+            <span className="workspace-text">
+              <InlineRename
+                className="rename-input"
+                label="Workspace name"
+                value={workspace.name}
+                onDone={(name) => {
+                  setRenaming(false);
+                  if (name) void renameWorkspace(workspace.id, name);
+                }}
+              />
+              <span className="workspace-branch">{detail}</span>
+            </span>
           </span>
-        </button>
+        ) : (
+          <button
+            className="workspace-main"
+            title={`${workspace.name} (double-click to rename)`}
+            onClick={() => selectWorkspace(workspace.id)}
+            onDoubleClick={() => setRenaming(true)}
+          >
+            <span className={`dot ${status}`} aria-hidden />
+            <span className="workspace-text">
+              <span className="workspace-title">
+                <span className="workspace-name">
+                  {unread && !selected && <span className="unread-dot" aria-label="New activity" />}
+                  {workspace.name}
+                </span>
+                {/* A review workspace's name already carries the number. */}
+                {pr && <PrMark pr={pr} hideNumber={workspace.linkedPr !== null} />}
+              </span>
+              <span className="workspace-branch">{detail}</span>
+            </span>
+          </button>
+        )}
         <GroupMenu member={member} current={workspace.groupId} />
         <button className="icon-button row-action" title="Archive workspace" onClick={archive}>
           ×
@@ -151,17 +223,39 @@ function WorkspaceRow({ workspace, detail }: { workspace: Workspace; detail: str
 function QuickChatRow({ chat }: { chat: Chat }) {
   const selected = useStore((s) => s.selectedQuickChatId === chat.id);
   const status = useStore((s) => s.statuses[chat.id] ?? "idle");
-  const { selectChat, deleteChat } = useStore.getState();
+  const { selectChat, deleteChat, renameChat } = useStore.getState();
+  const [renaming, setRenaming] = useState(false);
+  const unread = useUi((u) => Boolean(u.unread[chat.id]));
   const member: Member = { kind: "chat", id: chat.id };
   return (
     <li>
       <div className={"workspace quick" + (selected ? " selected" : "")} {...dragProps(member)}>
-        <button className="workspace-main" onClick={() => selectChat(chat.id)}>
-          <span className={`dot ${status}`} aria-hidden />
-          <span className="workspace-name" title={chat.title ?? undefined}>
-            {chat.title}
+        {renaming ? (
+          <span className="workspace-main">
+            <span className={`dot ${status}`} aria-hidden />
+            <InlineRename
+              className="rename-input"
+              label="Chat name"
+              value={chat.title ?? ""}
+              onDone={(title) => {
+                setRenaming(false);
+                if (title) void renameChat(chat.id, title);
+              }}
+            />
           </span>
-        </button>
+        ) : (
+          <button
+            className="workspace-main"
+            onClick={() => selectChat(chat.id)}
+            onDoubleClick={() => setRenaming(true)}
+          >
+            <span className={`dot ${status}`} aria-hidden />
+            <span className="workspace-name" title={`${chat.title} (double-click to rename)`}>
+              {unread && !selected && <span className="unread-dot" aria-label="New activity" />}
+              {chat.title}
+            </span>
+          </button>
+        )}
         <GroupMenu member={member} current={chat.groupId} />
         <button
           className="icon-button row-action"
@@ -181,35 +275,43 @@ function GroupSection({ groupId, name }: { groupId: string; name: string }) {
   const chats = useStore((s) => s.chats);
   const selected = useStore((s) => s.selectedGroupId === groupId);
   const status = useStore((s) => groupStatus(groupId, s.workspaces, s.chats, s.statuses));
+  const collapsed = usePanel((s) => Boolean(s.collapsed[`group:${groupId}`]));
   const { selectGroup, setGroup } = useStore.getState();
   const drop = useDropTarget((member) => void setGroup(member, groupId));
 
   const members = workspaces.filter((w) => w.groupId === groupId && !w.archived);
-  const quick = chats.filter((c) => c.groupId === groupId && !c.workspaceId && c.title);
+  const quick = chats.filter(
+    (c) => c.groupId === groupId && !c.workspaceId && c.title && !c.inboxId,
+  );
   const repoName = (id: string) => repos.find((r) => r.id === id)?.name ?? "";
 
   return (
-    <section className={"repo group" + (drop.over ? " drop-over" : "")} {...drop.props}>
-      <button
-        className={"group-header" + (selected ? " selected" : "")}
-        title="Open group overview"
-        onClick={() => selectGroup(groupId)}
-      >
-        <span className={`dot ${status}`} aria-hidden />
-        <span className="group-name">{name}</span>
-        <span className="group-count">{members.length + quick.length}</span>
-      </button>
-      <ul>
-        {members.map((ws) => (
-          <WorkspaceRow key={ws.id} workspace={ws} detail={`${repoName(ws.repoId)} · ${ws.branch}`} />
-        ))}
-        {quick.map((chat) => (
-          <QuickChatRow key={chat.id} chat={chat} />
-        ))}
-        {members.length + quick.length === 0 && (
-          <li className="workspace creating">Drag workspaces or quick chats here.</li>
-        )}
-      </ul>
+    <section
+      className={"repo group" + (drop.over ? " drop-over" : "")}
+      style={tagStyle(groupId)}
+      {...drop.props}
+    >
+      <div className={"group-header" + (selected ? " selected" : "")}>
+        <SectionToggle id={`group:${groupId}`} label={name} />
+        <button className="group-main" title="Open group overview" onClick={() => selectGroup(groupId)}>
+          <span className={`dot ${status}`} aria-hidden />
+          <span className="group-name">{name}</span>
+          <span className="group-count">{members.length + quick.length}</span>
+        </button>
+      </div>
+      {!collapsed && (
+        <ul>
+          {members.map((ws) => (
+            <WorkspaceRow key={ws.id} workspace={ws} detail={`${repoName(ws.repoId)} · ${ws.branch}`} />
+          ))}
+          {quick.map((chat) => (
+            <QuickChatRow key={chat.id} chat={chat} />
+          ))}
+          {members.length + quick.length === 0 && (
+            <li className="workspace creating">Drag workspaces or quick chats here.</li>
+          )}
+        </ul>
+      )}
     </section>
   );
 }
@@ -220,18 +322,26 @@ function RepoSection({ repoId }: { repoId: string }) {
   const chats = useStore((s) => s.chats);
   const creatingWorkspaceIn = useStore((s) => s.creatingWorkspaceIn);
   const openingQuickChatIn = useStore((s) => s.openingQuickChatIn);
+  const collapsed = usePanel((s) => Boolean(s.collapsed[`repo:${repoId}`]));
   const { removeRepo, createWorkspace, openQuickChat, setGroup } = useStore.getState();
   // Dropping onto a repository takes the item out of its group.
   const drop = useDropTarget((member) => void setGroup(member, null));
 
   const all = workspaces.filter((w) => w.repoId === repoId && !w.archived);
-  const allQuick = chats.filter((c) => c.repoId === repoId && c.title);
+  // Review chats started from the inbox are reached from there instead.
+  const allQuick = chats.filter((c) => c.repoId === repoId && c.title && !c.inboxId);
   const ungrouped = all.filter((w) => !w.groupId);
   const quick = allQuick.filter((c) => !c.groupId);
 
   return (
-    <section className={"repo" + (drop.over ? " drop-over" : "")} {...drop.props}>
+    <section
+      className={"repo" + (drop.over ? " drop-over" : "")}
+      style={tagStyle(repoId)}
+      {...drop.props}
+    >
       <header className="repo-header">
+        <SectionToggle id={`repo:${repoId}`} label={repo.name} />
+        <span className="swatch" aria-hidden />
         <span className="repo-name" title={repo.path}>
           {repo.name}
         </span>
@@ -268,9 +378,9 @@ function RepoSection({ repoId }: { repoId: string }) {
         </button>
       </header>
       <ul>
-        {ungrouped.map((ws) => (
-          <WorkspaceRow key={ws.id} workspace={ws} detail={ws.branch} />
-        ))}
+        {!collapsed &&
+          ungrouped.map((ws) => <WorkspaceRow key={ws.id} workspace={ws} detail={ws.branch} />)}
+        {/* Progress shows even when collapsed, so a click is never met with silence. */}
         {creatingWorkspaceIn === repo.id && (
           <li className="workspace creating">Creating workspace…</li>
         )}
@@ -278,7 +388,7 @@ function RepoSection({ repoId }: { repoId: string }) {
           <li className="workspace creating">Preparing quick chat…</li>
         )}
       </ul>
-      {quick.length > 0 && (
+      {!collapsed && quick.length > 0 && (
         <ul>
           <li className="section-label">Quick chats</li>
           {quick.map((chat) => (
@@ -294,7 +404,27 @@ export function Sidebar() {
   const repos = useStore((s) => s.repos);
   const groups = useStore((s) => s.groups);
   const width = usePanel((s) => s.sidebarWidth);
-  const { addRepo, createGroup } = useStore.getState();
+  const view = useStore((s) => s.selectedView);
+  const unread = useStore((s) => s.inbox.filter((i) => !i.read && !i.dismissed).length);
+  const inbox = useStore((s) => s.inbox);
+  // The chat on screen, whether it is a read-only chat or one in a workspace.
+  const openChatId = useStore(
+    (s) =>
+      s.selectedQuickChatId ??
+      (s.selectedWorkspaceId ? s.selectedChatIds[s.selectedWorkspaceId] : undefined),
+  );
+  const reviewsCollapsed = usePanel((s) => Boolean(s.collapsed.inbox));
+  // Every review an agent has started stays here until it is archived.
+  const reviews = inbox.filter((i) => i.chatId && !i.dismissed);
+  const prs = useStore((s) => s.prs);
+  const chats = useStore((s) => s.chats);
+  // A review's pull request is tracked under its chat, or under the
+  // workspace it was promoted into.
+  const reviewPr = (chatId: string | null) => {
+    const chat = chats.find((c) => c.id === chatId);
+    return chat ? prs[chat.workspaceId ?? chat.id] : undefined;
+  };
+  const { addRepo, createGroup, selectView, reviewInboxItem, deleteInboxItem } = useStore.getState();
 
   const pickRepo = async () => {
     const path = await open({ directory: true, title: "Add a git repository" });
@@ -322,6 +452,52 @@ export function Sidebar() {
           <SidebarToggle whenSidebar="shown" />
         </div>
         <div className="sidebar-scroll">
+          <nav className="sidebar-nav">
+            <div className={"nav-row" + (view === "inbox" ? " selected" : "")}>
+              {reviews.length > 0 && <SectionToggle id="inbox" label="reviews" />}
+              <button className="nav-main" onClick={() => selectView("inbox")}>
+                <span className="nav-label">Inbox</span>
+                {unread > 0 && (
+                  <span className="badge-count" aria-label={`${unread} unread`}>
+                    {unread}
+                  </span>
+                )}
+              </button>
+            </div>
+            {reviews.length > 0 && !reviewsCollapsed && (
+              <ul className="nav-children">
+                {reviews.map((item) => (
+                  <li key={item.id}>
+                    <div className={"workspace quick" + (item.chatId === openChatId ? " selected" : "")}>
+                      <button
+                        className="workspace-main"
+                        title={`${item.repo} #${item.number}: ${item.title}`}
+                        onClick={() => reviewInboxItem(item)}
+                      >
+                        <span className={`dot ${REVIEW_DOT[item.status]}`} aria-hidden />
+                        <span className="workspace-text">
+                          <span className="workspace-title">
+                            <span className="workspace-name">
+                              #{item.number} {item.title}
+                            </span>
+                            {reviewPr(item.chatId) && <PrMark pr={reviewPr(item.chatId)!} hideNumber />}
+                          </span>
+                          <span className="workspace-branch">{REVIEW_LABEL[item.status]}</span>
+                        </span>
+                      </button>
+                      <button
+                        className="icon-button row-action"
+                        title="Archive review: removes it from here and from the inbox"
+                        onClick={() => deleteInboxItem(item.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </nav>
           {groups.map((group) => (
             <GroupSection key={group.id} groupId={group.id} name={group.name} />
           ))}
@@ -338,6 +514,13 @@ export function Sidebar() {
           </button>
           <button className="text-button" onClick={() => createGroup("New group")}>
             + New group
+          </button>
+          <button
+            className={"text-button" + (view === "settings" ? " selected" : "")}
+            title="Settings (⌘,)"
+            onClick={() => selectView("settings")}
+          >
+            Settings
           </button>
         </footer>
       </aside>

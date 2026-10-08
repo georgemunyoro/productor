@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9d7bff"/>
+      <stop offset="0.5" stop-color="#7a4cff"/>
+      <stop offset="1" stop-color="#5f2fe6"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS icon grid: an 824px rounded square centred on a 1024px canvas. -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sheen)"/>
+  <!-- Three agents working in parallel: each a track with its head at a different point. -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M330 300 V724" stroke="#ffffff" stroke-opacity="0.32" stroke-width="56"/>
+    <path d="M512 300 V724" stroke="#ffffff" stroke-opacity="0.32" stroke-width="56"/>
+    <path d="M694 300 V724" stroke="#ffffff" stroke-opacity="0.32" stroke-width="56"/>
+    <path d="M330 724 V470" stroke="#ffffff" stroke-width="56"/>
+    <path d="M512 724 V330" stroke="#ffffff" stroke-width="56"/>
+    <path d="M694 724 V560" stroke="#ffffff" stroke-width="56"/>
+  </g>
+  <circle cx="330" cy="470" r="46" fill="#ffc93c"/>
+  <circle cx="512" cy="330" r="46" fill="#ff5a36"/>
+  <circle cx="694" cy="560" r="46" fill="#1fbf75"/>
+</svg>

@@ -46,6 +46,11 @@ pub async fn write(root: &Path, relative: &str, content: &str) -> Result<(), Str
     tokio::fs::write(&path, content).await.map_err(|e| format!("{relative}: {e}"))
 }
 
+pub async fn remove(root: &Path, relative: &str) -> Result<(), String> {
+    let path = resolve(root, relative)?;
+    tokio::fs::remove_file(&path).await.map_err(|e| format!("{relative}: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
